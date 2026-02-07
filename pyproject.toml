@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "breadboard"
+version = "0.1.0"
+description = "CLI tools for automating breadboard layouts with Fritzing parts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Breadboard Contributors" }
+]
+dependencies = [
+  "cairosvg>=2.7.1",
+  "pillow>=10.0.0",
+  "rich>=13.7.1",
+  "textual-image>=0.8.5",
+  "typer>=0.12.3",
+]
+
+[project.scripts]
+breadboard = "breadboard.cli:app"
+
+[tool.hatch.build]
+include = [
+  "src/breadboard/**",
+  "Fritzing-Library/**",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/breadboard"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/breadboard/**",
+  "Fritzing-Library/**",
+  "README.md",
+  "pyproject.toml",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["breadboard"]

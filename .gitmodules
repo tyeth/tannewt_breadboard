@@ -1,0 +1,9 @@
+[submodule "Fritzing-Library"]
+	path = Fritzing-Library
+	url = git@github.com:adafruit/Fritzing-Library.git
+[submodule "fritzing-parts"]
+	path = fritzing-parts
+	url = git@github.com:fritzing/fritzing-parts.git
+[submodule "fritzing-app.wiki"]
+	path = fritzing-app.wiki
+	url = https://github.com/fritzing/fritzing-app.wiki.git
