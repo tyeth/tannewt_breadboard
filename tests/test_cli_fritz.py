@@ -8,7 +8,7 @@ import re
 import pytest
 from typer.testing import CliRunner
 
-from breadboard.cli import app
+from breadboard.cli import _board_row_number, app
 
 runner = CliRunner()
 
@@ -65,6 +65,14 @@ def _translate_from_transform(transform: str | None) -> tuple[float, float]:
     return x, y
 
 
+def test_board_row_number_maps_bottom_half() -> None:
+    assert _board_row_number("connectorC28") == 58
+    assert _board_row_number("connectorE1") == 31
+    assert _board_row_number("connectorW30") == 60
+    assert _board_row_number("connectorG28") == 28
+    assert _board_row_number("connectorY30") == 30
+
+
 def test_fritz_matches_reference_positions(tmp_path: Path) -> None:
     library_path = _repo_root() / "Fritzing-Library"
     output_path = tmp_path / "layout.svg"
@@ -119,3 +127,49 @@ def test_fritz_rejects_unknown_board_size(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "Unknown board size" in result.output
+
+
+def test_fritz_fits_itsybitsy_and_two_rotary_encoders(tmp_path: Path) -> None:
+    library_path = _repo_root() / "Fritzing-Library"
+    output_path = tmp_path / "layout.svg"
+
+    result = runner.invoke(
+        app,
+        [
+            "fritz",
+            "Adafruit ItsyBitsy nRF52840",
+            "Rotary Encoder with Knob",
+            "Rotary Encoder with Knob",
+            "--library-path",
+            str(library_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert output_path.exists()
+
+
+def test_fritz_exits_when_layout_exceeds_board_with_three_rotary_encoders(tmp_path: Path) -> None:
+    library_path = _repo_root() / "Fritzing-Library"
+    output_path = tmp_path / "layout.svg"
+
+    result = runner.invoke(
+        app,
+        [
+            "fritz",
+            "Adafruit ItsyBitsy nRF52840",
+            "Rotary Encoder with Knob",
+            "Rotary Encoder with Knob",
+            "Rotary Encoder with Knob",
+            "--library-path",
+            str(library_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "exceeds the board height" in result.output
+    assert not output_path.exists()
