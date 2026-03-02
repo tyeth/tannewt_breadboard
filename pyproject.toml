@@ -19,6 +19,8 @@ dependencies = [
   "textual-image>=0.8.5",
   "typer>=0.12.3",
   "pyserial>=3.5",
+  "pytest",
+  "lxml"
 ]
 
 [project.scripts]
@@ -50,3 +52,10 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["breadboard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+  "fritzing-parts",
+  "Fritzing-Library",
+]
