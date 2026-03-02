@@ -174,6 +174,10 @@ class WireSpec:
     start: tuple[float, float]
     end: tuple[float, float]
     net_name: str
+    start_part_index: int | None = None
+    start_connector_id: str | None = None
+    end_part_index: int | None = None
+    end_connector_id: str | None = None
 
 
 class LayoutOverflowError(RuntimeError):
@@ -1661,7 +1665,17 @@ def _auto_connection_wire_specs(
         encoder_pin_name = encoder.connector_names.get(enc_id, "")
         board_pin_name = board.connector_names.get(board_id, "")
         net_name = board_pin_name or encoder_pin_name or "AUTO"
-        wires.append(WireSpec(start=start, end=end, net_name=net_name))
+        wires.append(
+            WireSpec(
+                start=start,
+                end=end,
+                net_name=net_name,
+                start_part_index=enc_index,
+                start_connector_id=enc_id,
+                end_part_index=board_index,
+                end_connector_id=board_id,
+            )
+        )
     return wires
 
 
@@ -1886,7 +1900,17 @@ def _default_wire_specs(
             )
             if point is None:
                 continue
-            wires.append(WireSpec(start=root_point, end=point, net_name=net_name))
+            wires.append(
+                WireSpec(
+                    start=root_point,
+                    end=point,
+                    net_name=net_name,
+                    start_part_index=root_part,
+                    start_connector_id=per_part[root_part],
+                    end_part_index=part_index,
+                    end_connector_id=per_part[part_index],
+                )
+            )
     return wires
 
 
@@ -1965,6 +1989,124 @@ def _wire_style_for_net(
     band = fallback_index // len(fallback_palette)
     dash = dash_patterns[min(band, len(dash_patterns) - 1)] if band > 0 else None
     return color, dash
+
+
+def _part_local_bounds(part: PartSvg) -> tuple[float, float, float, float]:
+    if part.drawing_bounds is not None:
+        return part.drawing_bounds
+    return 0.0, 0.0, part.width, part.height
+
+
+def _connector_emit_vector(
+    part: PartSvg,
+    connector_id: str,
+) -> tuple[float, float] | None:
+    point = part.connectors_by_id.get(connector_id)
+    if point is None:
+        return None
+
+    min_x, min_y, max_x, max_y = _part_local_bounds(part)
+    x, y = point
+    distances = {
+        "left": abs(x - min_x),
+        "right": abs(max_x - x),
+        "top": abs(y - min_y),
+        "bottom": abs(max_y - y),
+    }
+    side = min(distances, key=distances.get)
+    if side == "left":
+        return (-1.0, 0.0)
+    if side == "right":
+        return (1.0, 0.0)
+    if side == "top":
+        return (0.0, -1.0)
+    return (0.0, 1.0)
+
+
+def _clean_wire_points(
+    points: Sequence[tuple[float, float]],
+    tolerance: float = 1e-6,
+) -> list[tuple[float, float]]:
+    cleaned: list[tuple[float, float]] = []
+    for point in points:
+        if not cleaned:
+            cleaned.append(point)
+            continue
+        prev_x, prev_y = cleaned[-1]
+        if abs(point[0] - prev_x) <= tolerance and abs(point[1] - prev_y) <= tolerance:
+            continue
+        cleaned.append(point)
+    return cleaned
+
+
+def _unit_vector(dx: float, dy: float) -> tuple[float, float]:
+    length = math.hypot(dx, dy)
+    if length <= 1e-9:
+        return (1.0, 0.0)
+    return (dx / length, dy / length)
+
+
+def _lane_index_to_signed(lane_index: int) -> int:
+    if lane_index <= 0:
+        return 0
+    step = (lane_index + 1) // 2
+    return step if lane_index % 2 == 1 else -step
+
+
+def _wire_path_data(
+    wire_spec: WireSpec,
+    parts: Sequence[PartSvg],
+    lane_index: int = 0,
+    sweep_length: float = 8.0,
+) -> str:
+    start = wire_spec.start
+    end = wire_spec.end
+
+    start_vector: tuple[float, float] | None = None
+    if wire_spec.start_part_index is not None and wire_spec.start_connector_id is not None:
+        if 0 <= wire_spec.start_part_index < len(parts):
+            start_vector = _connector_emit_vector(
+                parts[wire_spec.start_part_index], wire_spec.start_connector_id
+            )
+
+    end_vector: tuple[float, float] | None = None
+    if wire_spec.end_part_index is not None and wire_spec.end_connector_id is not None:
+        if 0 <= wire_spec.end_part_index < len(parts):
+            end_vector = _connector_emit_vector(
+                parts[wire_spec.end_part_index], wire_spec.end_connector_id
+            )
+
+    line_direction = _unit_vector(end[0] - start[0], end[1] - start[1])
+    if start_vector is None:
+        start_vector = line_direction
+    if end_vector is None:
+        end_vector = (-line_direction[0], -line_direction[1])
+
+    distance = math.hypot(end[0] - start[0], end[1] - start[1])
+    tangent = max(sweep_length, min(28.0, distance * 0.35))
+
+    control_1 = (
+        start[0] + start_vector[0] * tangent,
+        start[1] + start_vector[1] * tangent,
+    )
+    control_2 = (
+        end[0] + end_vector[0] * tangent,
+        end[1] + end_vector[1] * tangent,
+    )
+
+    signed_lane = _lane_index_to_signed(lane_index)
+    if signed_lane != 0:
+        lane_spacing = 3.5
+        normal = (-line_direction[1], line_direction[0])
+        lane_offset = signed_lane * lane_spacing
+        offset = (normal[0] * lane_offset, normal[1] * lane_offset)
+        control_1 = (control_1[0] + offset[0], control_1[1] + offset[1])
+        control_2 = (control_2[0] + offset[0], control_2[1] + offset[1])
+
+    return (
+        f"M {start[0]} {start[1]} "
+        f"C {control_1[0]} {control_1[1]} {control_2[0]} {control_2[1]} {end[0]} {end[1]}"
+    )
 
 
 def _assemble_layout_svg(
@@ -2146,6 +2288,8 @@ def _assemble_layout_svg(
     fallback_index_by_net: dict[str, int] = {}
     fallback_counter = 0
 
+    lane_index_by_net: dict[str, int] = defaultdict(int)
+
     for wire_spec in _layout_wire_specs(parts, placements):
         start_x, start_y = wire_spec.start
         end_x, end_y = wire_spec.end
@@ -2160,8 +2304,11 @@ def _assemble_layout_svg(
         else:
             color, dash = standard_style
 
+        lane_index = lane_index_by_net[net_name]
+        lane_index_by_net[net_name] += 1
+
         attributes = {
-            "d": f"M {start_x} {start_y} L {end_x} {end_y}",
+            "d": _wire_path_data(wire_spec, parts, lane_index=lane_index),
             "stroke": color,
             "data-net": net_name,
         }
