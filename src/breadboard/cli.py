@@ -169,6 +169,13 @@ class PartSvg:
     units_per_in: float | None
 
 
+@dataclass(frozen=True)
+class WireSpec:
+    start: tuple[float, float]
+    end: tuple[float, float]
+    net_name: str
+
+
 class LayoutOverflowError(RuntimeError):
     def __init__(self, part_title: str):
         self.part_title = part_title
@@ -1627,11 +1634,21 @@ def _auto_connection_wires(
     parts: Sequence[PartSvg],
     placements: Sequence[tuple[float, float]],
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    return [
+        (wire.start, wire.end)
+        for wire in _auto_connection_wire_specs(parts, placements)
+    ]
+
+
+def _auto_connection_wire_specs(
+    parts: Sequence[PartSvg],
+    placements: Sequence[tuple[float, float]],
+) -> list[WireSpec]:
     connections = _auto_rotary_encoder_connections(parts)
     if not connections:
         return []
     index_by_part = {id(part): idx for idx, part in enumerate(parts)}
-    wires: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    wires: list[WireSpec] = []
     for encoder, enc_id, _enc_name, board, board_id, _board_name in connections:
         enc_index = index_by_part.get(id(encoder))
         board_index = index_by_part.get(id(board))
@@ -1641,7 +1658,10 @@ def _auto_connection_wires(
         end = _placed_connector_point(parts[board_index], placements[board_index], board_id)
         if start is None or end is None:
             continue
-        wires.append((start, end))
+        encoder_pin_name = encoder.connector_names.get(enc_id, "")
+        board_pin_name = board.connector_names.get(board_id, "")
+        net_name = board_pin_name or encoder_pin_name or "AUTO"
+        wires.append(WireSpec(start=start, end=end, net_name=net_name))
     return wires
 
 
@@ -1823,10 +1843,10 @@ def _placed_connector_point(
     return placement[0] + connector_point[0], placement[1] + connector_point[1]
 
 
-def _default_wires(
+def _default_wire_specs(
     parts: Sequence[PartSvg],
     placements: Sequence[tuple[float, float]],
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+) -> list[WireSpec]:
     nets: dict[str, list[tuple[int, str, int]]] = defaultdict(list)
     for part_index, part in enumerate(parts):
         connector_rank = {
@@ -1840,8 +1860,8 @@ def _default_wires(
                     (part_index, connector_id, connector_rank.get(connector_id, 10**9))
                 )
 
-    wires: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    for connector_refs in nets.values():
+    wires: list[WireSpec] = []
+    for net_name, connector_refs in nets.items():
         per_part: dict[int, str] = {}
         for part_index, connector_id, _rank in sorted(
             connector_refs, key=lambda item: item[2]
@@ -1866,9 +1886,85 @@ def _default_wires(
             )
             if point is None:
                 continue
-            wires.append((root_point, point))
-    wires.extend(_auto_connection_wires(parts, placements))
+            wires.append(WireSpec(start=root_point, end=point, net_name=net_name))
     return wires
+
+
+def _layout_wire_specs(
+    parts: Sequence[PartSvg],
+    placements: Sequence[tuple[float, float]],
+) -> list[WireSpec]:
+    wires = _default_wire_specs(parts, placements)
+    wires.extend(_auto_connection_wire_specs(parts, placements))
+    return wires
+
+
+def _default_wires(
+    parts: Sequence[PartSvg],
+    placements: Sequence[tuple[float, float]],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    return [(wire.start, wire.end) for wire in _layout_wire_specs(parts, placements)]
+
+
+def _wire_style_for_standard_net(net_name: str) -> tuple[str, str | None] | None:
+    normalized = _normalize_connector_name(net_name).replace("-", "_").replace("/", "_")
+    signal_name = normalized
+    if normalized.startswith("BUS:"):
+        signal_name = normalized.split(":", 1)[1]
+
+    if signal_name in DEFAULT_GROUND_NAMES:
+        return "#444444", None
+
+    if signal_name in DEFAULT_VOLTAGE_NAMES or signal_name.startswith(POWER_PREFIXES):
+        return "#D62728", None
+
+    standard_signals = [
+        ("SDA", "#1F77B4"),
+        ("SCL", "#FFD700"),
+        ("MOSI", "#FF7F0E"),
+        ("COPI", "#FF7F0E"),
+        ("MISO", "#9467BD"),
+        ("CIPO", "#9467BD"),
+        ("SCK", "#2CA02C"),
+        ("CLK", "#2CA02C"),
+        ("CS", "#E377C2"),
+        ("SS", "#E377C2"),
+        ("TX", "#17BECF"),
+        ("RX", "#BC4B8A"),
+    ]
+    for token, color in standard_signals:
+        if signal_name == token:
+            return color, None
+        if signal_name.startswith(f"{token}_") or signal_name.endswith(f"_{token}"):
+            return color, None
+
+    return None
+
+
+def _wire_style_for_net(
+    net_name: str,
+    fallback_index: int,
+) -> tuple[str, str | None]:
+    standard = _wire_style_for_standard_net(net_name)
+    if standard is not None:
+        return standard
+
+    fallback_palette = [
+        "#D62728",
+        "#1F77B4",
+        "#2CA02C",
+        "#FF7F0E",
+        "#9467BD",
+        "#17BECF",
+        "#8C564B",
+        "#E377C2",
+    ]
+    dash_patterns = [None, "8 4", "4 3", "10 3 2 3"]
+
+    color = fallback_palette[fallback_index % len(fallback_palette)]
+    band = fallback_index // len(fallback_palette)
+    dash = dash_patterns[min(band, len(dash_patterns) - 1)] if band > 0 else None
+    return color, dash
 
 
 def _assemble_layout_svg(
@@ -2047,10 +2143,33 @@ def _assemble_layout_svg(
             connectors_group.append(connector_group)
             buses_group.append(bus_group)
 
-    for (start_x, start_y), (end_x, end_y) in _default_wires(parts, placements):
+    fallback_index_by_net: dict[str, int] = {}
+    fallback_counter = 0
+
+    for wire_spec in _layout_wire_specs(parts, placements):
+        start_x, start_y = wire_spec.start
+        end_x, end_y = wire_spec.end
+        net_name = wire_spec.net_name
+
+        standard_style = _wire_style_for_standard_net(net_name)
+        if standard_style is None:
+            if net_name not in fallback_index_by_net:
+                fallback_index_by_net[net_name] = fallback_counter
+                fallback_counter += 1
+            color, dash = _wire_style_for_net(net_name, fallback_index_by_net[net_name])
+        else:
+            color, dash = standard_style
+
+        attributes = {
+            "d": f"M {start_x} {start_y} L {end_x} {end_y}",
+            "stroke": color,
+            "data-net": net_name,
+        }
+        if dash:
+            attributes["stroke-dasharray"] = dash
         wire = ElementTree.Element(
             _svg_tag(namespace, "path"),
-            {"d": f"M {start_x} {start_y} L {end_x} {end_y}"},
+            attributes,
         )
         wires_group.append(wire)
 
